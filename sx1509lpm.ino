@@ -3,10 +3,11 @@
 #include <Wire.h>           // Include the I2C library (required)
 #include <SparkFunSX1509.h> //Click here for the library: http://librarymanager/All#SparkFun_SX1509
 #include "LedControl.h"
-#include "encoderpot.h"
 #include <Bounce2.h>
 #include <MIDIUSB.h>
 #include <Smoothed.h> 
+
+
 
 
 #include "LedControl.h"
@@ -14,6 +15,9 @@
 #define LED_CS 16
 #define LED_CLK 14
 #define NPOTS 4
+#define CHN 15
+
+
 LedControl lc=LedControl(LED_DIN,LED_CLK,LED_CS,1);
 int delaytime=300;
 
@@ -25,26 +29,58 @@ SX1509 io;                        // Create an SX1509 object to be used througho
 bool debugging=true;
 bool hasChanged=false;
 
-int potVals[NPOTS] = {0,0,0,0};
-int lastPotVals[NPOTS] = {0,0,0,0};
+int potVals[NPOTS] = {0,0,0};
+int lastPotVals[NPOTS] = {0,0,0};
+int valz[NPOTS]={0,0,0};
 
+boolean sliderPending=false;
+boolean valueAnnounced=false;
 int lastSlideVal=0;
+int pendedAt=millis();
+
+int drumBtns[4] = {15,2,1,0};
+
+unsigned long time;
+
+
+
 
 const byte maxPins=16;
-const int slideButtonLevels[4] = {15,18,22,31};
+const int slideButtonLevels[3] = {81,99,68};
+
+int constCt=0;
 
 
 
 
-//Smoothed <int> a2Sensor; 
-//Smoothed <int> a3Sensor;
-//Smoothed <int> a0Sensor;
-//Smoothed <int> a1Sensor;
+Smoothed <int> Sensors[3];
+int sensorCt = 3;
+int aPins[3] = {A3,A1,A2};
 
+Smoothed <int> sliderSensor;
 
-Smoothed <int> Sensors[4];
+boolean isIn(int array[], int element) {
+ for (int i = 0; i < 4; i++) if (array[i] == element) return true;
+ return false;
+}
 
-
+int getNearestPosition(int val)
+{
+  int distance = 128;
+  int nearest = 0;
+  int i;
+  for(i=0;i<3;i++)
+  {
+    int tempdist = abs(val-slideButtonLevels[i]);
+    if (tempdist<distance)
+    {
+      distance = tempdist;
+      nearest = i;
+    }
+  }
+  Serial.print("Nearest is ");Serial.print(nearest);Serial.print(" Val is ");Serial.println(val);
+  return pow(2,(nearest+1));
+}
 
 
 
@@ -52,10 +88,12 @@ byte lastVal[maxPins] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
 void setup()
 {
+  if (debugging) Serial.println("done");
+  time = millis();
   
   // Serial is used in this example to display the input value
   // of the SX1509_INPUT_PIN input:
-  Serial.begin(115200);
+  if (debugging) Serial.begin(115200);
 
   Wire.begin();
 
@@ -63,7 +101,7 @@ void setup()
   // successfully communicates, it'll return 1.
   if (io.begin(SX1509_ADDRESS) == false)
   {
-    Serial.println("Failed to communicate. Check wiring and address of SX1509.");
+    if (debugging) Serial.println("Failed to communicate. Check wiring and address of SX1509.");
     while (1)
       ; // If we fail to communicate, loop forever.
   }
@@ -72,7 +110,8 @@ void setup()
 
   for (int i=0;i<maxPins;i++) io.pinMode(i, INPUT_PULLUP);
 
-  for (int i=0;i<NPOTS;i++) Sensors[i].begin(SMOOTHED_AVERAGE,10);
+  for (int i=0;i<3;i++) Sensors[i].begin(SMOOTHED_AVERAGE,8);
+  sliderSensor.begin(SMOOTHED_AVERAGE,10);
 
   setUpLED();
   hello();
@@ -87,30 +126,16 @@ void setUpLED()
   lc.clearDisplay(0);
 }
 
-void readSlideButton()
-{ 
-  int newSlideVal = (int)sqrt(analogRead(A0));
-  if (newSlideVal!=lastSlideVal)
-  {
-    lastSlideVal = newSlideVal;
-    Serial.println(getBars(newSlideVal));
-  }
-  
-}
-
-int getBars(int btnVal)
-{
-  for (int i=0;i<4;i++) if (btnVal==slideButtonLevels[i])  return round(pow(2,(i+1)));
-}
 
 void loop()
 {
 
-  //handleRotation();
-  //rPots();
-  rPots();
+  
+  //Serial.println("hello");
   readButtons();
-  //readSlideButton();
+  rPots();
+  //readSlider();
+  readSlide();
 
   
 
@@ -129,41 +154,27 @@ void readButtons()
     {
       lastVal[i]=btnState;
       hasChanged=true;
-      if (debugging) {Serial.print("Button "); Serial.println(i); Serial.print(":");Serial.println(btnState);}
+      //if (debugging) {Serial.print("Button "); Serial.println(i); Serial.print(":");Serial.println(btnState);}
+      if (isIn(drumBtns,i))
+      {
+        if (debugging) {Serial.print("note on note off for "); Serial.println(i);}
+        if (btnState==HIGH)  noteOn(0x00,0x24+i,0xD0);
+        else noteOff(CHN,0x24+i,0xD0);
+        MidiUSB.flush();
+      }
+      else
+      {
+        if (debugging) {Serial.print("control for"); Serial.println(i);}
+        if (btnState==HIGH)  controlChange(0x00,0x30+i,0x1);
+        else controlChange(CHN,0x30+i,0x60);
+        MidiUSB.flush();
+      }
     } 
     
   }
   if (hasChanged) {delay(50);hasChanged=false;}
 }
 
-void handleRotation()
-{
-  
-//  bool vPotChanged=false;
-//  bool tPotChanged=false;
-//  tPotPos = tPot->getVal();
-//  vPotPos = vPot->getVal();
-//
-//  //Serial.print(tPotPos);
-//
-//  if (oldTPotPos!=tPotPos) {
-//    oldTPotPos = tPotPos;
-//    tPotChanged=true;
-//  }
-//
-//  if (oldVPotPos!=vPotPos) {
-//    oldVPotPos = vPotPos;   
-//    vPotChanged=true;
-//  }
-//
-//  if (tPotChanged || vPotChanged) 
-//  {
-//    Serial.print("T Pot Val: ");
-//    Serial.println(tPotPos);
-//    Serial.print("V Pot Val: ");
-//    Serial.println(vPotPos);
-//  }
-}
 
 bool diff(int a, int b)
 {
@@ -171,50 +182,66 @@ bool diff(int a, int b)
   return false;
 }
 
-void readPots()
+
+void readSlider()
 {
-  bool hasChanged=false;
-  for (int i=A0;i<=A3;i++)
-  {
-    int val = analogRead(i)/8;
-    if (val!=lastPotVals[i]) 
-      {
-        //controlChange(0x00,0x40+i,0x7F-val);
-        hasChanged=true;
-        lastPotVals[i]=val;
-        //printNumToLed(val,i-A2);
-        printPotByPos(val,i);
-        }
-    
-  }
-  if (hasChanged)  
-  {
-    delay(5);
-    //MidiUSB.flush();
-  }
+  
+  sliderSensor.add(analogRead(A0)/60);
+  int slideVal = quantize(sliderSensor.get());
+  
+  if (slideVal!=lastSlideVal )   makeChange(slideVal);
+  
+ 
+  
 }
+
+void makeChange(int sv)
+{
+  if (millis()-pendedAt <1000) return;
+  if (debugging) Serial.print("The value is ");
+  if (debugging) Serial.println(sv);
+  pendedAt = millis();
+  lastSlideVal=sv;
+}
+
+int quantize(int sv)
+{
+  
+  for (int i=1;i<4;i++)
+  {
+    if (sv<=i*2)
+    {
+      return i;
+    }
+  }
+  
+}
+
 
 void rPots()
 {
        
     // Add the new value to both sensor value stores
+    int val;
     
-    int valz[4] = {0,0,0,0};
-    for (int i=0;i<4;i++)
+    for (int i=0;i<sensorCt;i++)
     {
-      Sensors[i].add(analogRead(A0+i));
-      valz[i]= Sensors[i].get()/8;
-      if (diff(valz[i],lastPotVals[i])) 
+      Sensors[i].add(analogRead(aPins[i]));
+      val= Sensors[i].get()/8;
+      //if (aPins[i]==A0) val= getNearestPosition(val);
+      if (abs(val-lastPotVals[i])>2) 
         {
         hasChanged=true;
-        lastPotVals[i]=valz[i];
-        printPotByPos(valz[i],i);
+        lastPotVals[i]=val;
+        printPotByPos(val,i);
+        controlChange(CHN,60+i,val);
         }
       
     }
     if (hasChanged) {delay(5);hasChanged=false;}
 
 }
+
 
 
 
@@ -237,42 +264,27 @@ void controlChange(byte channel, byte control, byte value) {
 
 void printPotByPos(byte num,byte pos)
 {
-  char strToPrint[2] = {'0','0'};
+  
   byte numPerCent = min(100-(num*100/128),99);
-  strToPrint[1] = '0'+ (numPerCent%10);
-  strToPrint[0] = '0'+ ((numPerCent/10)%10);
+  printDblDigitAt(numPerCent,pos);
+
+}
+
+void printDblDigitAt(byte nm, byte pos)
+{
+  char strToPrint[2] = {'0','0'};
+  strToPrint[0] = '0'+ (nm%10);
+  strToPrint[1] = '0'+ ((nm/10)%10);
   
   for (int i=0;i<2;i++) 
   {
-    int at = ((pos+1)*2)-(i+1);
+    int at = 6-(2*pos)+i;
     lc.setChar(0,at,strToPrint[i],false);
   }
-
 }
 
 
-void aprintNumToLed(byte num, bool left)
-{
-   char strToPrint[3] = {'0','0','0'};
 
-     
-   strToPrint[2] = '0'+ (num%10);
-  
-   if (num>9) strToPrint[1] = '0'+ ((num/10)%10);   
-   if (num>99) strToPrint[0] = '0'+ ((num/100)%10);
-
-   for (int i=0;i<3;i++)
-   {
-      if (!left) lc.setChar(0,2-i,strToPrint[i],false);
-      else lc.setChar(0,6-i,strToPrint[i],false);
-   }
-  
-
-  //if (debugging) Serial.print("num is: ");
-  //if (debugging) Serial.println(num);
-  //if (debugging) Serial.print("Position is: ");
-  //if (debugging) Serial.println(left);
-}
 
 void hello(){
   int delaytime=300;
@@ -308,4 +320,80 @@ void hello(){
 
   
   
+}
+
+void readSlide()
+{
+  
+  
+  int reading = quantize(round(analogRead(A0)/(float)50));
+  if (reading!=lastSlideVal) {lastSlideVal=reading;   valueAnnounced=false;}    
+  else
+    {
+      constCt++;
+      if (constCt>10  && !valueAnnounced)
+      {
+        if (debugging) Serial.print("New Val is ");
+        if (debugging) Serial.println(reading);
+        constCt=0;
+        valueAnnounced=true;
+        int bars = round(pow(2,reading));
+        if (debugging) Serial.println(bars);
+        controlChange(CHN,70,bars);
+        printDblDigitAt(bars,3);
+      }
+    }
+  
+}
+
+void handleRotation()
+{
+  
+//  bool vPotChanged=false;
+//  bool tPotChanged=false;
+//  tPotPos = tPot->getVal();
+//  vPotPos = vPot->getVal();
+//
+//  //Serial.print(tPotPos);
+//
+//  if (oldTPotPos!=tPotPos) {
+//    oldTPotPos = tPotPos;
+//    tPotChanged=true;
+//  }
+//
+//  if (oldVPotPos!=vPotPos) {
+//    oldVPotPos = vPotPos;   
+//    vPotChanged=true;
+//  }
+//
+//  if (tPotChanged || vPotChanged) 
+//  {
+//    Serial.print("T Pot Val: ");
+//    Serial.println(tPotPos);
+//    Serial.print("V Pot Val: ");
+//    Serial.println(vPotPos);
+//  }
+}
+
+void readPots()
+{
+  bool hasChanged=false;
+  for (int i=0;i<3;i++)
+  {
+    int val = analogRead(aPins[i])/8;
+    if (val!=lastPotVals[i]) 
+      {
+        //controlChange(0x00,0x40+i,0x7F-val);
+        hasChanged=true;
+        lastPotVals[i]=val;
+        //printNumToLed(val,i-A2);
+        printPotByPos(val,i);
+        }
+    
+  }
+  if (hasChanged)  
+  {
+    delay(5);
+    //MidiUSB.flush();
+  }
 }
