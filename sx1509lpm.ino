@@ -16,6 +16,7 @@
 #define LED_CLK 14
 #define NPOTS 4
 #define CHN 15
+#define DRUMCHAN 9
 
 
 LedControl lc=LedControl(LED_DIN,LED_CLK,LED_CS,1);
@@ -39,10 +40,12 @@ int lastSlideVal=0;
 int pendedAt=millis();
 
 int drumBtns[4] = {15,2,1,0};
+int fxBtns[9] = {3,4,5,6,7,8,9,10,11};
+int lastBars = 0;
 
 unsigned long time;
 
-
+bool noPots = false;
 
 
 const byte maxPins=16;
@@ -132,7 +135,10 @@ void loop()
 
   
   //Serial.println("hello");
-  readButtons();
+
+  readDrumButtons();
+  readFxButtons();
+  //readButtons();
   rPots();
   //readSlider();
   readSlide();
@@ -142,7 +148,40 @@ void loop()
   
 }
 
+void readDrumButtons()
+{
+  for (byte i=0;i<4;i++)
+  {
+    int btnState = io.digitalRead(drumBtns[i]);
+    if (btnState!=lastVal[i]) 
+    {
+      lastVal[i]=btnState;
+      hasChanged=true;
+      if (btnState==LOW)  noteOn(DRUMCHAN,36+i,0x60);
+      else noteOff(DRUMCHAN,36+i,0x60);
+      MidiUSB.flush();
+    }
+  }
+  if (hasChanged) {delay(5);hasChanged=false;}
+}
 
+void readFxButtons()
+{
+  byte offSet=4;
+  for (byte i=0;i<9;i++)
+  {
+    int btnState = io.digitalRead(fxBtns[i]);
+    if (btnState!=lastVal[i+offSet])
+    {
+      lastVal[i+offSet]=btnState;
+      hasChanged=true;
+      if (btnState==HIGH)  controlChange(CHN,0x30+i,0x1);
+      else controlChange(CHN,0x30+i,0x60);
+      MidiUSB.flush();
+    }
+  }
+  if (hasChanged) {delay(50);hasChanged=false;}
+}
 
 void readButtons()
 {
@@ -158,8 +197,8 @@ void readButtons()
       if (isIn(drumBtns,i))
       {
         if (debugging) {Serial.print("note on note off for "); Serial.println(i);}
-        if (btnState==HIGH)  noteOn(0x00,0x24+i,0xD0);
-        else noteOff(CHN,0x24+i,0xD0);
+        if (btnState==HIGH)  noteOn(DRUMCHAN,0x24+i,0xD0);
+        else noteOff(DRUMCHAN,0x24+i,0xD0);
         MidiUSB.flush();
       }
       else
@@ -227,18 +266,22 @@ void rPots()
     for (int i=0;i<sensorCt;i++)
     {
       Sensors[i].add(analogRead(aPins[i]));
-      val= Sensors[i].get()/8;
+      val= round(Sensors[i].get()/(float)8);
       //if (aPins[i]==A0) val= getNearestPosition(val);
-      if (abs(val-lastPotVals[i])>2) 
+      if (abs(val-lastPotVals[i])>3) 
         {
         hasChanged=true;
         lastPotVals[i]=val;
         printPotByPos(val,i);
-        controlChange(CHN,60+i,val);
+        if (!noPots)
+          {
+          controlChange(CHN,60+i,128-val);
+          MidiUSB.flush();
+          }
         }
       
     }
-    if (hasChanged) {delay(5);hasChanged=false;}
+    //if (hasChanged) {delay(5);hasChanged=false;}
 
 }
 
@@ -324,14 +367,26 @@ void hello(){
 
 void readSlide()
 {
-  
-  
   int reading = quantize(round(analogRead(A0)/(float)50));
-  if (reading!=lastSlideVal) {lastSlideVal=reading;   valueAnnounced=false;}    
+  if (reading!=lastSlideVal) 
+  {
+    if (reading==2 && lastSlideVal==1)
+    {
+      noPots=true;
+    }
+
+    if (reading==1 && lastSlideVal==2)
+    {
+      noPots=false;
+    }
+    lastSlideVal=reading;   
+    valueAnnounced=false;
+    
+  }    
   else
     {
       constCt++;
-      if (constCt>10  && !valueAnnounced)
+      if (constCt>20 && !valueAnnounced)
       {
         if (debugging) Serial.print("New Val is ");
         if (debugging) Serial.println(reading);
@@ -339,7 +394,12 @@ void readSlide()
         valueAnnounced=true;
         int bars = round(pow(2,reading));
         if (debugging) Serial.println(bars);
-        controlChange(CHN,70,bars);
+        if (bars!=lastBars)
+          {
+          controlChange(CHN,70,bars);
+          MidiUSB.flush();
+          lastBars = bars;
+          }
         printDblDigitAt(bars,3);
       }
     }
